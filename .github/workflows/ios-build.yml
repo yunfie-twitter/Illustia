@@ -26,6 +26,29 @@ jobs:
           node-version: "22"
           cache: "npm"
 
+      - name: Select Xcode 26
+        run: |
+          echo "=== Installed Xcodes ==="
+          ls -la /Applications | grep Xcode || true
+
+          if [ -d "/Applications/Xcode_26.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.4.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.3.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.1.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.1.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          else
+            echo "ERROR: Xcode 26 not found"
+            exit 1
+          fi
+
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
       # ── 3. Install JS dependencies ───────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
