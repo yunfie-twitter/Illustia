@@ -42,29 +42,36 @@ jobs:
       - name: xcodebuild archive (unsigned)
         run: |
           cd ios
+
           # Resolve workspace or project name dynamically
           WORKSPACE=$(ls -d *.xcworkspace 2>/dev/null | head -1)
           PROJECT=$(ls *.xcodeproj 2>/dev/null | head -1)
 
           if [ -n "$WORKSPACE" ]; then
-            BUILD_TARGET="-workspace $WORKSPACE"
+            BUILD_FLAG="-workspace"
+            BUILD_NAME="$WORKSPACE"
           else
-            BUILD_TARGET="-project $PROJECT"
+            BUILD_FLAG="-project"
+            BUILD_NAME="$PROJECT"
           fi
 
-          SCHEME=$(xcodebuild -list 2>/dev/null \
-            $(echo $BUILD_TARGET) \
-            | awk '/Schemes:/,0' \
+          echo "Build target: $BUILD_FLAG $BUILD_NAME"
+
+          # List available schemes for debugging
+          xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>&1 || true
+
+          SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
+            | awk '/Schemes:/,/^$/' \
             | grep -v "Schemes:" \
             | sed 's/^[[:space:]]*//' \
             | grep -v '^$' \
             | head -1)
 
           echo "Using scheme: $SCHEME"
-          echo "Using target: $BUILD_TARGET"
 
+          set -o pipefail
           xcodebuild \
-            $BUILD_TARGET \
+            "$BUILD_FLAG" "$BUILD_NAME" \
             -scheme "$SCHEME" \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/Illustia.xcarchive" \
@@ -73,14 +80,21 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            clean archive \
-            | xcpretty || true
+            clean archive 2>&1
 
-      # ── 7. Package .app into unsigned IPA ────────────────────────────────────
+      # ── 7. Verify archive and package .app into unsigned IPA ─────────────────
       - name: Package unsigned IPA
         run: |
-          APP_PATH=$(find "$RUNNER_TEMP/Illustia.xcarchive" -name "*.app" | head -1)
+          echo "=== xcarchive contents ==="
+          find "$RUNNER_TEMP/Illustia.xcarchive" -maxdepth 4 | head -40
+
+          APP_PATH=$(find "$RUNNER_TEMP/Illustia.xcarchive/Products" -name "*.app" -maxdepth 3 | head -1)
           echo "Found .app: $APP_PATH"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app not found in xcarchive"
+            exit 1
+          fi
 
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
