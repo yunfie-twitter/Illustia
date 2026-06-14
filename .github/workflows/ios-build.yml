@@ -91,9 +91,11 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
+            -arch arm64 \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             BUILD_DIR="$BUILD_DIR" \
             SYMROOT="$BUILD_DIR" \
+            OBJROOT="$RUNNER_TEMP/DerivedData/Build/Intermediates.noindex" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -117,16 +119,30 @@ jobs:
         run: |
           BUILD_DIR="$RUNNER_TEMP/build"
 
-          echo "=== .app search ==="
-          find "$BUILD_DIR" -name "*.app" -maxdepth 6 2>/dev/null | head -20
+          echo "=== Full build dir tree (depth 6) ==="
+          find "$BUILD_DIR" -maxdepth 6 2>/dev/null | grep -E "\.(app|ipa)$" | head -40 || true
 
-          APP_PATH=$(find "$BUILD_DIR" -name "*.app" \
-            -not -path "*/simulator/*" \
-            -maxdepth 6 | head -1)
+          # Search broadly – exclude PackageApplication stubs and simulator builds
+          APP_PATH=$(find "$BUILD_DIR" -name "*.app" -type d \
+            -not -path "*simulator*" \
+            -not -path "*iphonesimulator*" \
+            -not -name "*.appex" \
+            2>/dev/null | head -1)
+
+          # Fallback: search entire RUNNER_TEMP
+          if [ -z "$APP_PATH" ]; then
+            echo "Not found in BUILD_DIR, searching RUNNER_TEMP..."
+            APP_PATH=$(find "$RUNNER_TEMP" -name "*.app" -type d \
+              -not -path "*simulator*" \
+              -not -path "*iphonesimulator*" \
+              2>/dev/null | head -1)
+          fi
+
           echo "Found .app: $APP_PATH"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found in build output"
+            echo "ERROR: .app not found. Build tree:"
+            find "$RUNNER_TEMP" -maxdepth 8 2>/dev/null | head -60
             exit 1
           fi
 
