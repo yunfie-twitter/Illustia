@@ -1,27 +1,18 @@
-name: iOS Build (IPA)
+name: iOS Build (unsigned IPA)
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      profile:
-        description: "EAS build profile (development / preview / production)"
-        required: false
-        default: "production"
 
 jobs:
   build-ios:
-    name: Build IPA on macOS
+    name: Build unsigned IPA on macOS
     runs-on: macos-latest
 
     env:
-      # EAS / Expo
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      # Keychain
-      KEYCHAIN_NAME: build.keychain
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
@@ -43,63 +34,65 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli@latest
 
-      # ── 5. Restore certificates from Secrets ─────────────────────────────────
-      #  Secrets required:
-      #    IOS_DIST_P12_BASE64        … base64 of credentials/7dbe2c4f_dist.p12
-      #    IOS_DIST_P12_PASSWORD      … p12 password (currently "flarestore")
-      #    IOS_PROVISIONING_PROFILE_BASE64 … base64 of credentials/7dbe2c4f_dist.mobileprovision
+      # ── 5. Prebuild (generate ios/ Xcode project) ─────────────────────────────
+      - name: Expo prebuild
+        run: npx expo prebuild --platform ios --non-interactive
 
-      - name: Decode distribution certificate
+      # ── 6. xcodebuild – build .app (no signing) ───────────────────────────────
+      - name: xcodebuild archive (unsigned)
         run: |
-          echo "${{ secrets.IOS_DIST_P12_BASE64 }}" | base64 --decode > credentials/7dbe2c4f_dist.p12
+          cd ios
+          # Resolve workspace or project name dynamically
+          WORKSPACE=$(ls -d *.xcworkspace 2>/dev/null | head -1)
+          PROJECT=$(ls *.xcodeproj 2>/dev/null | head -1)
 
-      - name: Decode provisioning profile
+          if [ -n "$WORKSPACE" ]; then
+            BUILD_TARGET="-workspace $WORKSPACE"
+          else
+            BUILD_TARGET="-project $PROJECT"
+          fi
+
+          SCHEME=$(xcodebuild -list 2>/dev/null \
+            $(echo $BUILD_TARGET) \
+            | awk '/Schemes:/,0' \
+            | grep -v "Schemes:" \
+            | sed 's/^[[:space:]]*//' \
+            | grep -v '^$' \
+            | head -1)
+
+          echo "Using scheme: $SCHEME"
+          echo "Using target: $BUILD_TARGET"
+
+          xcodebuild \
+            $BUILD_TARGET \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Illustia.xcarchive" \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            clean archive \
+            | xcpretty || true
+
+      # ── 7. Package .app into unsigned IPA ────────────────────────────────────
+      - name: Package unsigned IPA
         run: |
-          echo "${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}" | base64 --decode > credentials/7dbe2c4f_dist.mobileprovision
+          APP_PATH=$(find "$RUNNER_TEMP/Illustia.xcarchive" -name "*.app" | head -1)
+          echo "Found .app: $APP_PATH"
 
-      # ── 6. Import certificate into keychain ────────────────────────────────────
-      - name: Import certificate into macOS keychain
-        run: |
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
-          security default-keychain -s "$KEYCHAIN_NAME"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
-          security import credentials/7dbe2c4f_dist.p12 \
-            -k "$KEYCHAIN_NAME" \
-            -P "${{ secrets.IOS_DIST_P12_PASSWORD }}" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/xcodebuild
-          security set-key-partition-list \
-            -S "apple-tool:,apple:" \
-            -s -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_NAME"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
 
-      # ── 7. Install provisioning profile ──────────────────────────────────────
-      - name: Install provisioning profile
-        run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp credentials/7dbe2c4f_dist.mobileprovision \
-            ~/Library/MobileDevice/Provisioning\ Profiles/
+          cd "$RUNNER_TEMP"
+          zip -r unsigned.ipa Payload/
+          echo "IPA created at: $RUNNER_TEMP/unsigned.ipa"
 
-      # ── 8. EAS local build ────────────────────────────────────────────────────
-      - name: Run EAS build (local)
-        run: |
-          PROFILE="${{ github.event.inputs.profile || 'production' }}"
-          eas build \
-            --platform ios \
-            --profile "$PROFILE" \
-            --local \
-            --non-interactive \
-            --output build/output.ipa
-
-      # ── 9. Upload IPA as artifact ─────────────────────────────────────────────
-      - name: Upload IPA artifact
+      # ── 8. Upload IPA as artifact ─────────────────────────────────────────────
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: illustia-ios-${{ github.sha }}
-          path: build/output.ipa
+          name: illustia-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/unsigned.ipa
           retention-days: 14
-
-      # ── 10. Cleanup keychain ─────────────────────────────────────────────────
-      - name: Delete keychain
-        if: always()
-        run: security delete-keychain "$KEYCHAIN_NAME" || true
