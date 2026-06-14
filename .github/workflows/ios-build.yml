@@ -38,26 +38,21 @@ jobs:
       - name: Expo prebuild
         run: npx expo prebuild --platform ios --non-interactive
 
-      # ── 6. xcodebuild – build .app (no signing) ───────────────────────────────
-      - name: xcodebuild archive (unsigned)
+      # ── 6. xcodebuild – build .app into BUILT_PRODUCTS_DIR (no signing) ────────
+      - name: xcodebuild build (unsigned)
         run: |
           cd ios
 
-          # Resolve workspace or project name dynamically
           WORKSPACE=$(ls -d *.xcworkspace 2>/dev/null | head -1)
           PROJECT=$(ls *.xcodeproj 2>/dev/null | head -1)
 
           if [ -n "$WORKSPACE" ]; then
-            BUILD_FLAG="-workspace"
-            BUILD_NAME="$WORKSPACE"
+            BUILD_FLAG="-workspace"; BUILD_NAME="$WORKSPACE"
           else
-            BUILD_FLAG="-project"
-            BUILD_NAME="$PROJECT"
+            BUILD_FLAG="-project";   BUILD_NAME="$PROJECT"
           fi
 
           echo "Build target: $BUILD_FLAG $BUILD_NAME"
-
-          # List available schemes for debugging
           xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>&1 || true
 
           SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
@@ -69,39 +64,48 @@ jobs:
 
           echo "Using scheme: $SCHEME"
 
+          BUILD_DIR="$RUNNER_TEMP/build"
+
           set -o pipefail
           xcodebuild \
             "$BUILD_FLAG" "$BUILD_NAME" \
             -scheme "$SCHEME" \
             -configuration Release \
-            -archivePath "$RUNNER_TEMP/Illustia.xcarchive" \
             -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            BUILD_DIR="$BUILD_DIR" \
+            SYMROOT="$BUILD_DIR" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            clean archive 2>&1
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build 2>&1
 
-      # ── 7. Verify archive and package .app into unsigned IPA ─────────────────
+      # ── 7. Package .app into unsigned IPA ─────────────────────────────────────
       - name: Package unsigned IPA
         run: |
-          echo "=== xcarchive contents ==="
-          find "$RUNNER_TEMP/Illustia.xcarchive" -maxdepth 4 | head -40
+          BUILD_DIR="$RUNNER_TEMP/build"
 
-          APP_PATH=$(find "$RUNNER_TEMP/Illustia.xcarchive/Products" -name "*.app" -maxdepth 3 | head -1)
+          echo "=== build output ==="
+          find "$BUILD_DIR" -name "*.app" -maxdepth 6 2>/dev/null | head -20
+
+          APP_PATH=$(find "$BUILD_DIR" -name "*.app" -not -path "*/simulator/*" -maxdepth 6 | head -1)
           echo "Found .app: $APP_PATH"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found in xcarchive"
+            echo "ERROR: .app not found in build output"
             exit 1
           fi
 
-          mkdir -p "$RUNNER_TEMP/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          PAYLOAD="$RUNNER_TEMP/Payload"
+          mkdir -p "$PAYLOAD"
+          cp -R "$APP_PATH" "$PAYLOAD/"
 
           cd "$RUNNER_TEMP"
           zip -r unsigned.ipa Payload/
-          echo "IPA created at: $RUNNER_TEMP/unsigned.ipa"
+          ls -lh unsigned.ipa
+          echo "IPA created: $RUNNER_TEMP/unsigned.ipa"
 
       # ── 8. Upload IPA as artifact ─────────────────────────────────────────────
       - name: Upload unsigned IPA
