@@ -1,4 +1,4 @@
-name: iOS Build (unsigned IPA)
+name: iOS Build unsigned IPA
 
 on:
   push:
@@ -26,173 +26,187 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      # ── 3. Install JS dependencies ────────────────────────────────────────────
+      # ── 3. Install JS dependencies ───────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
 
-      # ── 4. EAS CLI ────────────────────────────────────────────────────────────
+      # ── 4. Install EAS CLI ───────────────────────────────────────────────────
       - name: Install EAS CLI
         run: npm install -g eas-cli@latest
 
-      # ── 5. Clean Xcode DerivedData ────────────────────────────────────────────
+      # ── 5. Clean Xcode DerivedData ───────────────────────────────────────────
       - name: Clean Xcode derived data
-        run: rm -rf ~/Library/Developer/Xcode/DerivedData/*
+        run: |
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
+          rm -rf "$RUNNER_TEMP/DerivedData"
+          rm -rf "$RUNNER_TEMP/BuildProducts"
+          rm -rf "$RUNNER_TEMP/Payload"
+          rm -f "$RUNNER_TEMP/unsigned.ipa"
 
-      # ── 6. Expo prebuild ──────────────────────────────────────────────────────
+      # ── 6. Expo prebuild ─────────────────────────────────────────────────────
       - name: Expo prebuild
         run: npx expo prebuild --platform ios --non-interactive --clean
 
-      # ── 7. Verify iOS project & CocoaPods ────────────────────────────────────
+      # ── 7. Verify iOS project and install CocoaPods ──────────────────────────
       - name: Verify iOS project and install CocoaPods
         run: |
           cd ios
-          echo "=== iOS project files ==="
-          ls -la *.xcworkspace 2>/dev/null || ls -la *.xcodeproj
-          if [ ! -d "Pods" ]; then
-            echo "Pods directory not found – running pod install..."
-            pod install
-          else
-            echo "Pods directory exists"
-          fi
 
-      # ── 8. xcodebuild build (unsigned) ───────────────────────────────────────
-      - name: xcodebuild build (unsigned)
+          echo "=== iOS directory ==="
+          ls -la
+
+          echo "=== Xcode project/workspace ==="
+          ls -la *.xcworkspace 2>/dev/null || true
+          ls -la *.xcodeproj 2>/dev/null || true
+
+          echo "=== CocoaPods install ==="
+          pod install
+
+      # ── 8. Build .app without signing ────────────────────────────────────────
+      - name: xcodebuild build unsigned app
         run: |
           cd ios
 
           WORKSPACE=$(ls -d *.xcworkspace 2>/dev/null | head -1)
-          PROJECT=$(ls *.xcodeproj 2>/dev/null | head -1)
+          PROJECT=$(ls -d *.xcodeproj 2>/dev/null | head -1)
 
           if [ -n "$WORKSPACE" ]; then
-            BUILD_FLAG="-workspace"; BUILD_NAME="$WORKSPACE"
+            BUILD_FLAG="-workspace"
+            BUILD_NAME="$WORKSPACE"
+          elif [ -n "$PROJECT" ]; then
+            BUILD_FLAG="-project"
+            BUILD_NAME="$PROJECT"
           else
-            BUILD_FLAG="-project";   BUILD_NAME="$PROJECT"
+            echo "ERROR: .xcworkspace or .xcodeproj not found"
+            exit 1
           fi
 
-          echo "=== Available schemes ==="
-          xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>&1 || true
+          echo "Using $BUILD_FLAG $BUILD_NAME"
 
-          # "Pods" と "Tests" を除いた最初のスキームをアプリスキームとして使用
+          echo "=== Available schemes ==="
+          xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME"
+
+          # アプリ本体っぽい scheme を自動取得
           SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
             | awk '/Schemes:/,/^[[:space:]]*$/' \
             | grep -v "Schemes:" \
             | sed 's/^[[:space:]]*//' \
             | grep -v '^$' \
-            | grep -vE -i "^(pods|tests?)" \
+            | grep -vE -i '^(Pods|.*Tests?|.*UITests?|.*tvOS.*|.*watchOS.*)$' \
             | head -1)
 
           if [ -z "$SCHEME" ]; then
-            SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
-              | awk '/Schemes:/,/^[[:space:]]*$/' \
-              | grep -v "Schemes:" \
-              | sed 's/^[[:space:]]*//' \
-              | grep -v '^$' \
-              | head -1)
+            echo "ERROR: App scheme not found"
+            exit 1
           fi
 
           echo "Using scheme: [$SCHEME]"
 
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
+          BUILD_DIR="$RUNNER_TEMP/BuildProducts"
           LOG="$RUNNER_TEMP/build.log"
 
-          # ビルド設定を確認して実際の出力先を記録
-          echo "=== Build settings (SYMROOT / BUILT_PRODUCTS_DIR) ==="
-          xcodebuild "$BUILD_FLAG" "$BUILD_NAME" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGNING_ALLOWED=NO \
-            -showBuildSettings 2>/dev/null \
-            | grep -E "^\s+(SYMROOT|BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|TARGET_NAME)\s*=" \
-            | head -20 \
-            | tee "$RUNNER_TEMP/build_settings.txt" || true
+          rm -rf "$DERIVED_DATA" "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
 
-          set -o pipefail
+          echo "=== Build settings preview ==="
           xcodebuild \
             "$BUILD_FLAG" "$BUILD_NAME" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            -arch arm64 \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath "$DERIVED_DATA" \
+            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             PROVISIONING_PROFILE="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee "$LOG" \
-          || (echo ""; echo "=== BUILD FAILED – last 100 lines ==="; tail -100 "$LOG"; exit 1)
+            DEVELOPMENT_TEAM="" \
+            -showBuildSettings 2>/dev/null \
+            | grep -E "^\s+(TARGET_NAME|PRODUCT_NAME|WRAPPER_NAME|BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|SYMROOT)\s*=" \
+            | tee "$RUNNER_TEMP/build_settings.txt" || true
 
-      # ── 9. Upload raw build log on failure ────────────────────────────────────
+          echo "=== Start xcodebuild ==="
+          set -o pipefail
+
+          xcodebuild \
+            "$BUILD_FLAG" "$BUILD_NAME" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -arch arm64 \
+            -derivedDataPath "$DERIVED_DATA" \
+            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$LOG"
+
+          echo "=== BuildProducts tree ==="
+          find "$BUILD_DIR" -maxdepth 5 -print || true
+
+          echo "=== DerivedData Build tree ==="
+          find "$DERIVED_DATA/Build" -maxdepth 5 -print || true
+
+      # ── 9. Upload build log on failure ───────────────────────────────────────
       - name: Upload build log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log-${{ github.sha }}
-          path: ${{ runner.temp }}/build.log
+          path: |
+            ${{ runner.temp }}/build.log
+            ${{ runner.temp }}/build_settings.txt
           retention-days: 7
 
       # ── 10. Package .app into unsigned IPA ───────────────────────────────────
       - name: Package unsigned IPA
         run: |
-          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
-
-          # build_settings から SYMROOT を読んで .app を探す
-          SYMROOT=$(grep "SYMROOT" "$RUNNER_TEMP/build_settings.txt" 2>/dev/null \
-            | head -1 | sed 's/.*= *//')
-          echo "SYMROOT from build settings: [$SYMROOT]"
+          BUILD_DIR="$RUNNER_TEMP/BuildProducts"
 
           echo "=== Searching .app ==="
 
-          find_app() {
-            local base="$1"
-            find "$base" -name "*.app" -type d \
-              -not -name "*.appex" \
-              -not -path "*iphonesimulator*" \
-              -not -path "*simulator*" \
-              2>/dev/null | sort | head -1
-          }
-
-          APP_PATH=""
-
-          # 1. SYMROOT (build settings から取得)
-          [ -n "$SYMROOT" ] && APP_PATH=$(find_app "$SYMROOT")
-
-          # 2. DerivedData/Build/Products
-          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$DERIVED_DATA/Build/Products")
-
-          # 3. DerivedData 全体
-          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$DERIVED_DATA")
-
-          # 4. RUNNER_TEMP 全体
-          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$RUNNER_TEMP")
-
-          # 5. システム DerivedData
-          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$HOME/Library/Developer/Xcode/DerivedData")
+          APP_PATH=$(find "$BUILD_DIR" \
+            -name "*.app" \
+            -type d \
+            -not -name "*.appex" \
+            -not -path "*iphonesimulator*" \
+            -not -path "*simulator*" \
+            | sort \
+            | head -1)
 
           echo "Found .app: [$APP_PATH]"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found after all search paths."
+            echo "ERROR: .app not found"
+            echo "--- BuildProducts tree ---"
+            find "$BUILD_DIR" -maxdepth 8 -print || true
             echo "--- RUNNER_TEMP tree ---"
-            find "$RUNNER_TEMP" -maxdepth 5 \
-              -not -path "*_runner_file_commands*" \
-              -not -path "*.sh" \
-              2>/dev/null | head -60
+            find "$RUNNER_TEMP" -maxdepth 6 -print || true
             exit 1
           fi
 
           PAYLOAD="$RUNNER_TEMP/Payload"
+          rm -rf "$PAYLOAD"
           mkdir -p "$PAYLOAD"
+
           cp -R "$APP_PATH" "$PAYLOAD/"
 
           cd "$RUNNER_TEMP"
-          zip -r unsigned.ipa Payload/
-          ls -lh unsigned.ipa
-          echo "IPA created: $RUNNER_TEMP/unsigned.ipa"
+          rm -f unsigned.ipa
+          zip -r unsigned.ipa Payload
 
-      # ── 11. Upload IPA as artifact ────────────────────────────────────────────
+          echo "=== IPA created ==="
+          ls -lh unsigned.ipa
+
+      # ── 11. Upload unsigned IPA ──────────────────────────────────────────────
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
