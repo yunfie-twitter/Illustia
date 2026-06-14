@@ -70,21 +70,35 @@ jobs:
           fi
 
           echo "Build target: $BUILD_FLAG $BUILD_NAME"
+
+          # スキーム一覧を表示
+          echo "=== Available schemes ==="
           xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>&1 || true
 
+          # "Pods" を含まないスキームを優先選択（アプリスキームを狙う）
           SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
             | awk '/Schemes:/,/^$/' \
             | grep -v "Schemes:" \
             | sed 's/^[[:space:]]*//' \
             | grep -v '^$' \
+            | grep -vi "pods" \
             | head -1)
+
+          # フォールバック: 最初のスキーム
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
+              | awk '/Schemes:/,/^$/' \
+              | grep -v "Schemes:" \
+              | sed 's/^[[:space:]]*//' \
+              | grep -v '^$' \
+              | head -1)
+          fi
 
           echo "Using scheme: $SCHEME"
 
-          BUILD_DIR="$RUNNER_TEMP/build"
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
           LOG="$RUNNER_TEMP/build.log"
 
-          # ログにも流しつつ、失敗時は全ログを表示して exit 1
           set -o pipefail
           xcodebuild \
             "$BUILD_FLAG" "$BUILD_NAME" \
@@ -92,16 +106,12 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -arch arm64 \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            BUILD_DIR="$BUILD_DIR" \
-            SYMROOT="$BUILD_DIR" \
-            OBJROOT="$RUNNER_TEMP/DerivedData/Build/Intermediates.noindex" \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
             AD_HOC_CODE_SIGNING_ALLOWED=NO \
-            -verbose \
             build 2>&1 | tee "$LOG" \
           || (echo ""; echo "=== BUILD FAILED – last 100 lines ==="; tail -100 "$LOG"; exit 1)
 
@@ -117,32 +127,35 @@ jobs:
       # ── 10. Package .app into unsigned IPA ───────────────────────────────────
       - name: Package unsigned IPA
         run: |
-          BUILD_DIR="$RUNNER_TEMP/build"
+          DERIVED_DATA="$RUNNER_TEMP/DerivedData"
 
-          echo "=== Full build dir tree (depth 6) ==="
-          find "$BUILD_DIR" -maxdepth 6 2>/dev/null | grep -E "\.(app|ipa)$" | head -40 || true
+          echo "=== Searching .app in DerivedData ==="
+          find "$DERIVED_DATA" -name "*.app" -type d 2>/dev/null | head -20 || echo "(none found)"
 
-          # Search broadly – exclude PackageApplication stubs and simulator builds
-          APP_PATH=$(find "$BUILD_DIR" -name "*.app" -type d \
+          APP_PATH=$(find "$DERIVED_DATA" -name "*.app" -type d \
+            -not -name "*.appex" \
             -not -path "*simulator*" \
             -not -path "*iphonesimulator*" \
-            -not -name "*.appex" \
-            2>/dev/null | head -1)
+            2>/dev/null | sort | head -1)
 
-          # Fallback: search entire RUNNER_TEMP
+          # Fallback: ~/Library/Developer/Xcode/DerivedData (system default)
           if [ -z "$APP_PATH" ]; then
-            echo "Not found in BUILD_DIR, searching RUNNER_TEMP..."
-            APP_PATH=$(find "$RUNNER_TEMP" -name "*.app" -type d \
+            echo "Not in RUNNER_TEMP DerivedData, searching system DerivedData..."
+            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d \
+              -not -name "*.appex" \
               -not -path "*simulator*" \
               -not -path "*iphonesimulator*" \
-              2>/dev/null | head -1)
+              2>/dev/null | sort | head -1)
           fi
 
           echo "Found .app: $APP_PATH"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found. Build tree:"
-            find "$RUNNER_TEMP" -maxdepth 8 2>/dev/null | head -60
+            echo "ERROR: .app not found. Dumping known build paths:"
+            echo "--- RUNNER_TEMP/DerivedData ---"
+            find "$DERIVED_DATA" -maxdepth 6 2>/dev/null | head -40 || echo "(empty)"
+            echo "--- system DerivedData ---"
+            find ~/Library/Developer/Xcode/DerivedData -maxdepth 5 2>/dev/null | grep -E "\.(app|a)$" | head -40 || echo "(empty)"
             exit 1
           fi
 
