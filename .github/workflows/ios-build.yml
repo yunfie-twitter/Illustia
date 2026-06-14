@@ -34,11 +34,28 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli@latest
 
-      # ── 5. Prebuild (generate ios/ Xcode project) ─────────────────────────────
-      - name: Expo prebuild
-        run: npx expo prebuild --platform ios --non-interactive
+      # ── 5. Clean Xcode DerivedData ────────────────────────────────────────────
+      - name: Clean Xcode derived data
+        run: rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
-      # ── 6. xcodebuild – build .app into BUILT_PRODUCTS_DIR (no signing) ────────
+      # ── 6. Expo prebuild ──────────────────────────────────────────────────────
+      - name: Expo prebuild
+        run: npx expo prebuild --platform ios --non-interactive --clean
+
+      # ── 7. Verify iOS project & CocoaPods ────────────────────────────────────
+      - name: Verify iOS project and install CocoaPods
+        run: |
+          cd ios
+          echo "=== iOS project files ==="
+          ls -la *.xcworkspace 2>/dev/null || ls -la *.xcodeproj
+          if [ ! -d "Pods" ]; then
+            echo "Pods directory not found – running pod install..."
+            pod install
+          else
+            echo "Pods directory exists"
+          fi
+
+      # ── 8. xcodebuild build (unsigned) ───────────────────────────────────────
       - name: xcodebuild build (unsigned)
         run: |
           cd ios
@@ -65,7 +82,9 @@ jobs:
           echo "Using scheme: $SCHEME"
 
           BUILD_DIR="$RUNNER_TEMP/build"
+          LOG="$RUNNER_TEMP/build.log"
 
+          # ログにも流しつつ、失敗時は全ログを表示して exit 1
           set -o pipefail
           xcodebuild \
             "$BUILD_FLAG" "$BUILD_NAME" \
@@ -80,17 +99,30 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
             AD_HOC_CODE_SIGNING_ALLOWED=NO \
-            build 2>&1
+            -verbose \
+            build 2>&1 | tee "$LOG" \
+          || (echo ""; echo "=== BUILD FAILED – last 100 lines ==="; tail -100 "$LOG"; exit 1)
 
-      # ── 7. Package .app into unsigned IPA ─────────────────────────────────────
+      # ── 9. Upload raw build log on failure ────────────────────────────────────
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log-${{ github.sha }}
+          path: ${{ runner.temp }}/build.log
+          retention-days: 7
+
+      # ── 10. Package .app into unsigned IPA ───────────────────────────────────
       - name: Package unsigned IPA
         run: |
           BUILD_DIR="$RUNNER_TEMP/build"
 
-          echo "=== build output ==="
+          echo "=== .app search ==="
           find "$BUILD_DIR" -name "*.app" -maxdepth 6 2>/dev/null | head -20
 
-          APP_PATH=$(find "$BUILD_DIR" -name "*.app" -not -path "*/simulator/*" -maxdepth 6 | head -1)
+          APP_PATH=$(find "$BUILD_DIR" -name "*.app" \
+            -not -path "*/simulator/*" \
+            -maxdepth 6 | head -1)
           echo "Found .app: $APP_PATH"
 
           if [ -z "$APP_PATH" ]; then
@@ -107,7 +139,7 @@ jobs:
           ls -lh unsigned.ipa
           echo "IPA created: $RUNNER_TEMP/unsigned.ipa"
 
-      # ── 8. Upload IPA as artifact ─────────────────────────────────────────────
+      # ── 11. Upload IPA as artifact ────────────────────────────────────────────
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
