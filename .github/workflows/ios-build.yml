@@ -69,35 +69,44 @@ jobs:
             BUILD_FLAG="-project";   BUILD_NAME="$PROJECT"
           fi
 
-          echo "Build target: $BUILD_FLAG $BUILD_NAME"
-
-          # スキーム一覧を表示
           echo "=== Available schemes ==="
           xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>&1 || true
 
-          # "Pods" を含まないスキームを優先選択（アプリスキームを狙う）
+          # "Pods" と "Tests" を除いた最初のスキームをアプリスキームとして使用
           SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
-            | awk '/Schemes:/,/^$/' \
+            | awk '/Schemes:/,/^[[:space:]]*$/' \
             | grep -v "Schemes:" \
             | sed 's/^[[:space:]]*//' \
             | grep -v '^$' \
-            | grep -vi "pods" \
+            | grep -vE -i "^(pods|tests?)" \
             | head -1)
 
-          # フォールバック: 最初のスキーム
           if [ -z "$SCHEME" ]; then
             SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
-              | awk '/Schemes:/,/^$/' \
+              | awk '/Schemes:/,/^[[:space:]]*$/' \
               | grep -v "Schemes:" \
               | sed 's/^[[:space:]]*//' \
               | grep -v '^$' \
               | head -1)
           fi
 
-          echo "Using scheme: $SCHEME"
+          echo "Using scheme: [$SCHEME]"
 
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
           LOG="$RUNNER_TEMP/build.log"
+
+          # ビルド設定を確認して実際の出力先を記録
+          echo "=== Build settings (SYMROOT / BUILT_PRODUCTS_DIR) ==="
+          xcodebuild "$BUILD_FLAG" "$BUILD_NAME" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            -showBuildSettings 2>/dev/null \
+            | grep -E "^\s+(SYMROOT|BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|TARGET_NAME)\s*=" \
+            | head -20 \
+            | tee "$RUNNER_TEMP/build_settings.txt" || true
 
           set -o pipefail
           xcodebuild \
@@ -129,33 +138,48 @@ jobs:
         run: |
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
 
-          echo "=== Searching .app in DerivedData ==="
-          find "$DERIVED_DATA" -name "*.app" -type d 2>/dev/null | head -20 || echo "(none found)"
+          # build_settings から SYMROOT を読んで .app を探す
+          SYMROOT=$(grep "SYMROOT" "$RUNNER_TEMP/build_settings.txt" 2>/dev/null \
+            | head -1 | sed 's/.*= *//')
+          echo "SYMROOT from build settings: [$SYMROOT]"
 
-          APP_PATH=$(find "$DERIVED_DATA" -name "*.app" -type d \
-            -not -name "*.appex" \
-            -not -path "*simulator*" \
-            -not -path "*iphonesimulator*" \
-            2>/dev/null | sort | head -1)
+          echo "=== Searching .app ==="
 
-          # Fallback: ~/Library/Developer/Xcode/DerivedData (system default)
-          if [ -z "$APP_PATH" ]; then
-            echo "Not in RUNNER_TEMP DerivedData, searching system DerivedData..."
-            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d \
+          find_app() {
+            local base="$1"
+            find "$base" -name "*.app" -type d \
               -not -name "*.appex" \
-              -not -path "*simulator*" \
               -not -path "*iphonesimulator*" \
-              2>/dev/null | sort | head -1)
-          fi
+              -not -path "*simulator*" \
+              2>/dev/null | sort | head -1
+          }
 
-          echo "Found .app: $APP_PATH"
+          APP_PATH=""
+
+          # 1. SYMROOT (build settings から取得)
+          [ -n "$SYMROOT" ] && APP_PATH=$(find_app "$SYMROOT")
+
+          # 2. DerivedData/Build/Products
+          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$DERIVED_DATA/Build/Products")
+
+          # 3. DerivedData 全体
+          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$DERIVED_DATA")
+
+          # 4. RUNNER_TEMP 全体
+          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$RUNNER_TEMP")
+
+          # 5. システム DerivedData
+          [ -z "$APP_PATH" ] && APP_PATH=$(find_app "$HOME/Library/Developer/Xcode/DerivedData")
+
+          echo "Found .app: [$APP_PATH]"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found. Dumping known build paths:"
-            echo "--- RUNNER_TEMP/DerivedData ---"
-            find "$DERIVED_DATA" -maxdepth 6 2>/dev/null | head -40 || echo "(empty)"
-            echo "--- system DerivedData ---"
-            find ~/Library/Developer/Xcode/DerivedData -maxdepth 5 2>/dev/null | grep -E "\.(app|a)$" | head -40 || echo "(empty)"
+            echo "ERROR: .app not found after all search paths."
+            echo "--- RUNNER_TEMP tree ---"
+            find "$RUNNER_TEMP" -maxdepth 5 \
+              -not -path "*_runner_file_commands*" \
+              -not -path "*.sh" \
+              2>/dev/null | head -60
             exit 1
           fi
 
