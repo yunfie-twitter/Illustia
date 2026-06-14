@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Illustia",
+    "slug": "illustia-yunfie",
+    "scheme": "illustia",
+    "version": "1.0.0",
+    "jsEngine": "hermes",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "jsEngine": "hermes",
+      "bundleIdentifier": "com.yunfie.illustia",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "jsEngine": "hermes",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.anonymous.illustia"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "78c6bd0b-6d2e-4070-96cb-1cb673e1174e"
+      }
+    },
+    "owner": "yunfie1316"
+  }
+}
