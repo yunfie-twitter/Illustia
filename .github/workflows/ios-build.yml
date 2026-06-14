@@ -62,7 +62,7 @@ jobs:
           echo "=== CocoaPods install ==="
           pod install
 
-      # ── 8. Build .app without signing ────────────────────────────────────────
+            # ── 8. Build .app without signing ────────────────────────────────────────
       - name: xcodebuild build unsigned app
         run: |
           cd ios
@@ -86,20 +86,8 @@ jobs:
           echo "=== Available schemes ==="
           xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME"
 
-          # アプリ本体っぽい scheme を自動取得
-          SCHEME=$(xcodebuild -list "$BUILD_FLAG" "$BUILD_NAME" 2>/dev/null \
-            | awk '/Schemes:/,/^[[:space:]]*$/' \
-            | grep -v "Schemes:" \
-            | sed 's/^[[:space:]]*//' \
-            | grep -v '^$' \
-            | grep -vE -i '^(Pods|.*Tests?|.*UITests?|.*tvOS.*|.*watchOS.*)$' \
-            | head -1)
-
-          if [ -z "$SCHEME" ]; then
-            echo "ERROR: App scheme not found"
-            exit 1
-          fi
-
+          # アプリ本体の scheme を固定
+          SCHEME="Illustia"
           echo "Using scheme: [$SCHEME]"
 
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
@@ -137,7 +125,6 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -arch arm64 \
             -derivedDataPath "$DERIVED_DATA" \
             CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
             CODE_SIGNING_ALLOWED=NO \
